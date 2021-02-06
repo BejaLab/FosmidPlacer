@@ -10,6 +10,7 @@ predict_genes() {
 }
 export -f predict_genes
 
+# NB: make paths more flexible
 parallel \
 	ln -fs ../../../gtdbtk/{}.fna gtdbtk/ \; \
 	[ -e ../../gtdbtk/{}.faa ] '&&' ln -fs ../../../gtdbtk/{}.faa gtdbtk/ \

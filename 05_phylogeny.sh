@@ -1,7 +1,5 @@
 
-source taxa.cfg
-
-parallel mkdir -p phylogeny/{/.} \; xargs samtools faidx {} \< gtdbtk.txt \> phylogeny/{/.}/gene.trim_w_gaps ::: "$GTDBTK_DATA_PATH/$domain"_msa_marker_genes_all/*.faa 
+parallel mkdir -p phylogeny/{/.} \; xargs samtools faidx {} \< gtdbtk.txt \> phylogeny/{/.}/gene.trim_w_gaps ::: marker_genes/*.faa 
 
 parallel mafft --reorder --localpair --maxiterate 1000 {} \> {.}.mafft ::: phylogeny/*/gene.faa
 parallel trimal -in {} -out {.}.trim -automated1                       ::: phylogeny/*/gene.mafft

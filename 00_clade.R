@@ -1,30 +1,33 @@
+#!/usr/bin/Rscript
+
+dir <- commandArgs(T)
+if (length(dir) > 0 & dir.exists(dir[1])) pwd(dir[1])
+
+source("taxa.cfg")
+
+if (! exists("taxon") ) {
+	write("taxon not specified in taxa.cfg", stderr())
+	q(status = 1)
+}
+
 suppressPackageStartupMessages(library(treeio))
 suppressPackageStartupMessages(library(tidyr))
 suppressPackageStartupMessages(library(dplyr))
 suppressPackageStartupMessages(library(ape))
 
-source("taxa.cfg")
-
-if (! exists("taxon") | ! exists("domain") ) {
-	write("taxon and domain must be specified in taxa.cfg", stderr())
-	q(status = 1)
-}
-
-ref.tree.fname <- paste0(domain, "_r95.tree")
-
-ref.tree <- Sys.getenv("GTDBTK_DATA_PATH") %>%
-	file.path(ref.tree.fname) %>%
-	read.tree
+ref.tree <- read.tree("gtdbtk.tree")
 nodes <- as_tibble(ref.tree) %>%
 	filter(node > Ntip(ref.tree), node != rootnode(ref.tree)) %>%
 	separate(label, into = c("support", "taxon"), sep = ":", fill = "right", convert = T) %>%
 	select(node, support, taxon)
-node <- filter(nodes, taxon == !!taxon) %>% pull(node)
+clade.node <- filter(nodes, taxon %in% !!taxon) %>%
+	pull(node) %>%
+	{ifelse(length(.) > 1, getMRCA(ref.tree, .), .)}
 
 clade <- as_tibble(ref.tree) %>%
 	left_join(nodes, by = "node") %>%
 	as.treedata %>%
-	tree_subset(node = node, levels_back = 0)
+	tree_subset(node = clade.node, levels_back = 0)
 
 cat(clade@phylo$tip.label, file = "gtdbtk.txt", sep = "\n")
 write.jtree(clade, "clade.jtree")

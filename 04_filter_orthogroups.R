@@ -5,8 +5,7 @@ library(tools)
 
 contigs <- Sys.glob("contigs/*.faa") %>% basename
 
-fnames <- Sys.glob("orthologs/*.faa") %>%
-	`[`(file.size(.) > 0)
+fnames <- Sys.glob("orthologs/*.faa") %>% `[`(file.size(.) > 0)
 faa <- lapply(fnames, read.fasta, as.string = T, seqtype = "AA") %>%
 	setNames(basename(fnames)) %>%
 	lapply(unlist) %>%
@@ -21,7 +20,7 @@ orthogroups <- read.table("ublast.proteinortho.tsv", comment.char="", sep = "\t"
 	filter(X..Species == Genes, Genes > 4) %>%
 	gather(faa, gene, -X..Species, -Genes, -Alg..Conn., -og, na.rm = T) %>%
 	left_join(faa, by = c("faa", "gene")) %>%
-	mutate(fasta = sprintf(">%s\n%s", file_path_sans_ext(faa), sequence)) %>%
+	mutate(fasta = sprintf(">%s %s\n%s", file_path_sans_ext(faa), gene, sequence)) %>%
 	group_by(og) %>%
 	group_map(function(og, meta) {
 		og.dir <- file.path("phylogeny", meta$og)
