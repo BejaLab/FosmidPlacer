@@ -1,0 +1,5 @@
+data/*
+input/*
+legacy
+workflow/.snakemake
+.snakemake

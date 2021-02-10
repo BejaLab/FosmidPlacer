@@ -1,0 +1,223 @@
+import yaml
+import os
+import os.path
+from glob import glob
+
+with open("config/dependencies.yml", 'r') as fp:
+	deps = yaml.safe_load(fp)
+
+configfile:
+	"config/config.json"
+
+rule all:
+	input:
+		'data/results.jtree'
+
+rule dependencies_cli:
+	output:
+		"data/dependencies-cli.txt"
+	params:
+		packages = deps["cli"]
+	script:
+		"scripts/dependencies-cli.py"
+
+rule dependencies_r:
+	output:
+		"data/dependencies-r.txt"
+	params:
+		packages = deps["r"]
+	script:
+		"scripts/dependencies-r.R"
+
+checkpoint clade:
+	params:
+		taxon = config["taxon"]
+	input:
+		tree = glob('{path}/{prefix}_*.tree'.format(path = config["gtdb_path"], prefix = config["gtdb_prefix"])),
+		deps_r   = 'data/dependencies-r.txt',
+		deps_cli = 'data/dependencies-cli.txt'
+	output:
+		'data/gtdb_list.txt',
+		'data/clade.jtree',
+		'data/clade.reduced.tree'
+	script:
+		'scripts/clade.R'
+
+checkpoint ncbi_genome_download:
+	input:
+		'data/gtdb_list.txt'
+	output:
+		'data/gtdb_download.ok'
+	threads: 4
+	script:
+		'scripts/download.py'
+
+def gtdb_accession_aggregate(wildcards):
+	checkpoints.ncbi_genome_download.get()
+	wc = glob_wildcards('data/{section}/{domain}/{accession}/{prefix}_genomic.fna')
+	return expand('data/{section}/{domain}/{{accession}}/{prefix}_genomic.fna', zip, section = wc.section, domain = wc.domain, prefix = wc.prefix)
+
+checkpoint predict:
+	input:
+		gtdb_accession_aggregate
+	output:
+		'data/gtdb/{accession}.faa'
+	shell:
+		"""
+		mkdir -p data/gtdb
+		dir=$(dirname {input})
+		faa=$(echo "$dir/"*_protein.faa)
+		if [ -s "$faa" ]; then
+			ln -fs ../../"$faa" {output}
+		else
+			ln -fs ../../{input}.faa {output}
+			if [ ! -s {input}.faa ]; then
+				cd "$dir" && gmsn.pl --format GFF --prok --faa *_genomic.fna
+			fi
+                fi
+                """
+
+rule ublast:
+	input:
+		'data/gtdb/{accession}.faa', 'input/{contig}.faa'
+	output:
+		'data/gtdb/{accession}-{contig}.ublast'
+	shell:
+		'usearch -ublast {input[0]} -db {input[1]} -evalue 1e-10 -accel .4 -threads 1 -blast6out {output}'
+
+def accession_wildcard():
+	gtdb_list = checkpoints.clade.get().output[0]
+	with open(gtdb_list) as fp:
+		return fp.read().splitlines()
+
+def contig_wildcard():
+	return glob_wildcards('input/{contig}.faa').contig
+
+def usearch_aggregate(wildcards):
+	checkpoints.predict.get()
+	return expand("data/gtdb/{{accession}}-{contig}.ublast", contig = contig_wildcard())
+
+rule collect_usearch:
+	input:
+		usearch_aggregate
+	output:
+		'data/gtdb/{accession}.faa_selected'
+	shell:
+		'cut -f1 {input} | cut -f1 -d" " | sort -u | xargs samtools faidx data/gtdb/{wildcards.accession}.faa > {output}'
+
+def faa_selected_aggregate(wildcards):
+	return expand('data/gtdb/{accession}.faa_selected', accession = accession_wildcard()) + expand('input/{contig}.faa', contig = contig_wildcard())
+
+rule proteinortho:
+	input:
+		faa_selected_aggregate
+	output:
+		'data/ublast.proteinortho.tsv'
+	threads:
+		10
+	shell:
+		"""
+		proteinortho -cpus={threads} -p=ublast -conn=1 -project=ublast -identity=60 {input}
+		mv ublast.proteinortho.* ublast.info ublast.blast-graph data/
+		"""
+
+checkpoint filter_orthogroups:
+	input:
+		'data/ublast.proteinortho.tsv'
+	output:
+		'data/filter_orthogroups.txt'
+	script:
+		'scripts/filter_orthogroups.R'
+
+rule iqtree_markers:
+	input:
+		'data/gtdb_list.txt', os.path.join(config['gtdb_path'], config['gtdb_prefix'] + '_msa_marker_genes_all', '{marker}.faa')
+	output:
+		'data/phylogeny/{marker}/gene.trim.treefile'
+	shell:
+		"""
+		mkdir -p "$(dirname {output})"
+		output={output}
+		trim=${{output%.*}}
+		seqkit grep -rf {input} | seqkit replace -p '^(GB|RS)_' > "$trim"_w_gaps
+		trimal -in "$trim"_w_gaps -out "$trim" -noallgaps
+		iqtree -bb 1000 -nt 1 -s "$trim"
+		"""
+
+rule iqtree_orthogroups:
+	input:
+		'data/phylogeny/{orthogroup}/gene.faa'
+	output:
+		'data/phylogeny/{orthogroup}/gene.trim.treefile'
+	shell:
+		"""
+		output={output}
+		trim=${{output%.*}}
+		base=${{trim%.}}
+		mafft --reorder --localpair --maxiterate 1000 {input} > "$base".mafft
+		trimal -in "$base".mafft -out "$trim" -automated1
+		iqtree -bb 1000 -nt 1 -s "$trim"
+		"""
+
+checkpoint iqtree_markers_all:
+	input:
+		expand('data/phylogeny/{marker}/gene.trim.treefile', marker = glob_wildcards(config['gtdb_prefix'] + '_msa_marker_genes_all/{marker}.faa').marker)
+	output:
+		'data/iqtree_markers.ok'
+	shell:
+		'echo {input} > {output}'
+
+def orthogroups_aggregate(wildcards):
+	orthogroups_file = checkpoints.filter_orthogroups.get().output[0]
+	return expand('data/phylogeny/{orthogroup}/gene.trim.treefile', orthogroup = glob_wildcards('data/phylogeny/{orthogroup}/gene.faa').orthogroup)
+
+checkpoint iqtree_orthogroups_all:
+	input:
+		orthogroups_aggregate
+	output:
+		'data/iqtree_orthogroups.ok'
+	shell:
+		'echo {input} > {output}'
+
+def iqtree_aggregate(wildcards):
+	checkpoints.iqtree_markers_all.get()
+	checkpoints.iqtree_orthogroups_all.get()
+	gene = glob_wildcards('data/phylogeny/{gene}/gene.trim.treefile').gene
+	return expand('data/phylogeny/{gene}/gene.trim', gene = gene)
+
+checkpoint treeshrink:
+	input:
+		iqtree_aggregate
+	output:
+		'data/treeshrink.trees'
+	shell:
+		"""
+		run_treeshrink.py -i data/phylogeny -t gene.trim.treefile -a gene.trim -O treeshrink --force
+		cat data/phylogeny/*/treeshrink.treefile > data/treeshrink.trees
+		"""
+
+def treeshrink_aggregate(wildcards):
+	checkpoints.treeshrink.get(**wildcards)
+	gene = glob_wildcards('data/phylogeny/{gene}/treeshrink.treefile').gene
+	return expand('data/phylogeny/{gene}/treeshrink.treefile', gene = gene)
+
+rule astral:
+	input:
+		'data/treeshrink.trees'
+	output:
+		'data/astral.tree'
+	shell:
+		'astral -t 2 -i {input} -o {output}'
+
+rule collect_results:
+	input:
+		astral = 'data/astral.tree',
+		metadata = glob('{gtdb_path}/metadata/genome_metadata.tsv'.format(gtdb_path = config["gtdb_path"])),
+		contigs = glob('input/*.faa'),
+		treeshrinks = glob('data/phylogeny/*/treeshrink.trim'),
+		clade_tree = 'data/clade.jtree'
+	output:
+		'data/results.jtree'
+	script:
+		'scripts/collect_results.R'
+

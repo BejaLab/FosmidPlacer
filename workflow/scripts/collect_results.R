@@ -1,13 +1,17 @@
 
-packages <- c("dplyr", "tidyr", "treeio", "phytools", "ape", "tools", "seqinr", "phangorn", "bioformatr")
+astral.file   <- snakemake@input$astral
+metadata.file <- snakemake@input$metadata
+contigs       <- snakemake@input$contigs
+treeshrinks   <- snakemake@input$treeshrinks
+clade_tree    <- snakemake@input$clade_tree
+
+packages <- c("dplyr", "tidyr", "treeio", "phytools", "ape", "tools", "seqinr", "phangorn")
 invisible(lapply(packages, function(pkg) suppressPackageStartupMessages(library(pkg, character.only = T))))
 
 options(stringsAsFactors = F)
 
-metadata <- Sys.getenv("GTDBTK_DATA_PATH") %>%
-	file.path("metadata/genome_metadata.tsv") %>%
-	read.table(sep = "\t", header = T, quote = "", na.strings = c("na", ""), comment.char = "") %>%
-	mutate(prefix = ifelse(grepl("^GCF", accession), "RS_", "GB_"), label = paste0(prefix, accession))
+metadata <- read.table(metadata.file, sep = "\t", header = T, quote = "", na.strings = c("na", ""), comment.char = "") %>%
+	mutate(label = accession)
 
 get.outgroup <- function(tree) {
 	left_right <- child(tree, rootnode(tree))
@@ -43,30 +47,30 @@ all.tips.new <- function(tree, node, new.tips) {
 		sapply(all)
 }
 
-txt.fnames <- Sys.glob("../hmm/*.txt")
-txt <- lapply(txt.fnames, read.table, col.name = c("Seq.Name", "Group")) %>%
-	setNames(basename(txt.fnames) %>% file_path_sans_ext) %>%
-	bind_rows(.id = "hmm") %>%
-	mutate(Group = paste("hmm", hmm, Group, sep = "."))
+# NB: this part is not yet released - import of hmm hits
+#txt.fnames <- Sys.glob("../hmm/*.txt")
+#txt <- lapply(txt.fnames, read.table, col.name = c("Seq.Name", "Group")) %>%
+#	setNames(basename(txt.fnames) %>% file_path_sans_ext) %>%
+#	bind_rows(.id = "hmm") %>%
+#	mutate(Group = paste("hmm", hmm, Group, sep = "."))
+#ublast.fnames <- Sys.glob(c("gtdbtk/*+*.ublast", "contigs/*+*.ublast")) %>%
+#	file.info %>%
+#	filter(size > 0) %>%
+#	rownames
+#hmm.hits <- lapply(ublast.fnames, read.table, sep = "\t", col.names = c("qseqid", "Seq.Name", "pident", "length", "mismatch", "gapopen", "qstart", "qend", "sstart", "send", "evalue", "bitscore")) %>%
+#	setNames(ublast.fnames) %>%
+#	bind_rows(.id = "fname") %>%
+#	distinct(qseqid, .keep_all = T) %>%
+#	extract(fname, into = c("label", "hmm"), regex = ".+/(.+)[+](.+).ublast") %>%
+#	filter(pident > 50) %>%
+#	left_join(txt, by = "Seq.Name") %>%
+#	group_by(label, Group) %>%
+#	summarize(n = n()) %>%
+#	spread(Group, n)
 
-ublast.fnames <- Sys.glob(c("gtdbtk/*+*.ublast", "contigs/*+*.ublast")) %>%
-	file.info %>%
-	filter(size > 0) %>%
-	rownames
-hmm.hits <- lapply(ublast.fnames, read.table, sep = "\t", col.names = c("qseqid", "Seq.Name", "pident", "length", "mismatch", "gapopen", "qstart", "qend", "sstart", "send", "evalue", "bitscore")) %>%
-	setNames(ublast.fnames) %>%
-	bind_rows(.id = "fname") %>%
-	distinct(qseqid, .keep_all = T) %>%
-	extract(fname, into = c("label", "hmm"), regex = ".+/(.+)[+](.+).ublast") %>%
-	filter(pident > 50) %>%
-	left_join(txt, by = "Seq.Name") %>%
-	group_by(label, Group) %>%
-	summarize(n = n()) %>%
-	spread(Group, n)
+clade <- read.jtree(clade_tree)
 
-clade <- read.jtree("clade.jtree")
-
-gene.files <- Sys.glob("phylogeny/*/treeshrink.trim")
+gene.files <- treeshrinks
 gene.names <- file_path_sans_ext(gene.files)
 gene.lens <- gene.files %>%
 	lapply(read.fasta) %>%
@@ -81,8 +85,7 @@ gene.dists <- paste0(gene.names, ".treefile") %>%
 	lapply(as.table) %>%
 	setNames(gene.names)
 
-contigs <- Sys.glob("contigs/*.faa")
-contig.names <- basename(contigs) %>% file_path_sans_ext
+contig.names <- file_path_sans_ext(basename(contigs))
 genes.all <- lapply(contigs, read.fasta, as.string = T) %>%
 	sapply(length) %>%
 	setNames(contig.names)
@@ -95,18 +98,18 @@ lapply(gene.names, function(gene.name) c(
 	paste(ncol(gene.dists[[gene.name]]), gene.lens[[gene.name]]),
 	capture.output(write.table(gene.dists[[gene.name]], sep = "\t", col.names = F, quote = F))
 )) %>% {c(length(.), unlist(.))} %>%
-	cat(file = "phylogeny.trees.dists", sep = "\n")
+	cat(file = "data/phylogeny.trees.dists", sep = "\n")
 
-astral <- read.astral("astral.tree")
+astral <- read.astral(astral.file)
 astral@data <- bind_rows(astral@data, data.frame(node = 1:Ntip(astral)))
 astral.backbone <- unroot(astral@phylo)
 astral.backbone$edge.length <- NULL
-write.tree(astral.backbone, "astral.backbone.tree")
+write.tree(astral.backbone, "data/astral.backbone.tree")
 
 # Run ERABLE
-system("erable -i phylogeny.trees.dists -t astral.backbone.tree -o erable.tree")
+system("erable -i data/phylogeny.trees.dists -t data/astral.backbone.tree -o data/erable.tree")
 
-erable.tree <- read.tree("erable.tree.length.nwk") %>% midpoint
+erable.tree <- read.tree("data/erable.tree.length.nwk") %>% midpoint
 erable.tree$edge.length[erable.tree$edge.length < 0] <- 0
 
 clade.data <- as_tibble(clade) %>%
@@ -142,11 +145,11 @@ as_tibble(erable.tree) %>%
 	mutate(branch.length.erable = branch.length) %>%
 	left_join(astral.data, by = "split") %>%
 	left_join(gtdb.taxa,   by = "descendants") %>%
-	left_join(hmm.hits,    by = "label") %>%
+	#left_join(hmm.hits,    by = "label") %>%
 	left_join(metadata,    by = "label") %>%
 	mutate(genes.all = genes.all[label], genes.phylo = genes.phylo[label]) %>%
 	mutate_if(is.character, list(~na_if(.,""))) %>%
 	distinct(node, .keep_all = T) %>%
 	as.treedata %>%
-	write.jtree("erable.jtree")
+	write.jtree("data/results.jtree")
 

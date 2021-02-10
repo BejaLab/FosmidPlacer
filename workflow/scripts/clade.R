@@ -1,37 +1,36 @@
 #!/usr/bin/Rscript
 
-dir <- commandArgs(T)
-if (length(dir) > 0 & dir.exists(dir[1])) pwd(dir[1])
-
-source("taxa.cfg")
-
-if (! exists("taxon") ) {
-	write("taxon not specified in taxa.cfg", stderr())
-	q(status = 1)
-}
+taxon  <- snakemake@params$taxon
+gtdb_tree <- snakemake@input$tree
+marker_genes <- snakemake@input$marker_genes
 
 suppressPackageStartupMessages(library(treeio))
 suppressPackageStartupMessages(library(tidyr))
 suppressPackageStartupMessages(library(dplyr))
 suppressPackageStartupMessages(library(ape))
 
-ref.tree <- read.tree("gtdbtk.tree")
+ref.tree <- read.tree(gtdb_tree)
 nodes <- as_tibble(ref.tree) %>%
 	filter(node > Ntip(ref.tree), node != rootnode(ref.tree)) %>%
 	separate(label, into = c("support", "taxon"), sep = ":", fill = "right", convert = T) %>%
 	select(node, support, taxon)
-clade.node <- filter(nodes, taxon %in% !!taxon) %>%
-	pull(node) %>%
-	{ifelse(length(.) > 1, getMRCA(ref.tree, .), .)}
-
+clade.node <- filter(nodes, taxon %in% !!taxon) %>% pull(node)
+if (length(clade.node) == 0) {
+	write("Taxon not found on the GTDB reference tree", stderr())
+	q(status = 1)
+}
+if (length(clade.node) > 1) {
+	clade.node <- getMRCA(ref.tree, clade.node)
+}
 clade <- as_tibble(ref.tree) %>%
 	left_join(nodes, by = "node") %>%
+	mutate(label = gsub("^(RS|GB)_", "", label)) %>%
 	as.treedata %>%
 	tree_subset(node = clade.node, levels_back = 0)
 
-cat(clade@phylo$tip.label, file = "gtdbtk.txt", sep = "\n")
-write.jtree(clade, "clade.jtree")
+cat(clade@phylo$tip.label, sep = "\n", file = "data/gtdb_list.txt")
 
+write.jtree(clade, "data/clade.jtree")
 clade.reduced <- clade@phylo
 edges <- as_tibble(clade) %>%
 	filter(node > Ntip(clade), node != rootnode(clade)) %>%
@@ -45,4 +44,4 @@ clade.reduced$edge.length[edges$edge.id] <- edges$keep
 clade.reduced <- di2multi(clade.reduced)
 clade.reduced$edge.length <- NULL
 clade.reduced$node.label  <- NULL
-write.tree(clade.reduced, file = "clade.reduced.tree")
+write.tree(clade.reduced, file = "data/clade.reduced.tree")
