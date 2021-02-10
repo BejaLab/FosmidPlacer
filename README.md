@@ -1,6 +1,6 @@
 # FosmidPlacer
 
-Phylogenetic placement for environmental DNA fragments.
+Phylogenetic placement for environmental DNA fragments, [`snakemake`](https://snakemake.readthedocs.io/en/stable/) workflow.
 
 ## Input
 
